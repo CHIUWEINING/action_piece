@@ -34,6 +34,7 @@ from genrec.utils import get_best_ckpt_path
 from genrec.utils import get_file_name
 from genrec.utils import get_last_ckpt_path
 from genrec.utils import get_rng_states
+from genrec.utils import get_run_file_name
 from genrec.utils import get_total_steps
 from genrec.utils import load_ckpt
 from genrec.utils import log
@@ -163,7 +164,7 @@ class Trainer:
         )
     )
     self.accelerator.init_trackers(
-        project_name=get_file_name(self.config, suffix=''),
+        project_name=get_run_file_name(self.config, suffix=''),
         config=config_for_log(self.config),
         init_kwargs={'tensorboard': {'flush_secs': 60}},
     )

@@ -92,7 +92,9 @@ python main.py --category=Musical_Instruments <same hyperparameters as before> \
 Passing `<prefix>.pth` also works, the `.last.pth` next to it is used. Training
 continues from the latest epoch and keeps updating the same `<prefix>.pth` and
 `<prefix>.last.pth`. A warning lists any config value that differs from the
-original run. Logs and tensorboard go to a new run (with continuing epochs).
+original run. The log file (`logs/.../<prefix>.log`) and the tensorboard run are
+also found by the same `<prefix>`, so new logs are appended to the original
+ones and the epochs continue.
 
 ### Test only
 

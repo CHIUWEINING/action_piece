@@ -138,6 +138,27 @@ def get_last_ckpt_path(ckpt_path: str) -> str:
   return ckpt_path + _LAST_CKPT_SUFFIX
 
 
+def get_run_file_name(config: dict[str, Any], suffix: str = '') -> str:
+  """Like `get_file_name`, but reuses the name of the run being resumed.
+
+  The checkpoints, log and tensorboard run of one training run share the same
+  `<run name>` prefix, so resuming (`resume_from`) keeps appending to them.
+
+  Args:
+      config (dict): The configuration dictionary.
+      suffix (str): The suffix to append to the file name.
+
+  Returns:
+      str: The file name.
+  """
+  if config.get('resume_from'):
+    prefix = os.path.basename(get_best_ckpt_path(config['resume_from']))
+    if prefix.endswith(_BEST_CKPT_SUFFIX):
+      prefix = prefix[: -len(_BEST_CKPT_SUFFIX)]
+    return prefix + suffix
+  return get_file_name(config, suffix=suffix)
+
+
 def get_results_path(config: dict[str, Any], ckpt_path: str) -> str:
   """Returns `<results_dir>/<category>/<ckpt file name without .pth>.json`."""
   prefix = os.path.basename(ckpt_path)
@@ -208,7 +229,7 @@ def init_logger(config: dict[str, Any]):
   category_name = os.path.join(model_name, config['category'])
   os.makedirs(category_name, exist_ok=True)
 
-  logfilename = get_file_name(config, suffix='.log')
+  logfilename = get_run_file_name(config, suffix='.log')
   logfilepath = os.path.join(
       log_root, config['dataset'], config['model'], config['category'], logfilename
   )
