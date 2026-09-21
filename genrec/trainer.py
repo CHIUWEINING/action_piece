@@ -28,10 +28,16 @@ from typing import Any
 from genrec.evaluator import Evaluator
 from genrec.model import AbstractModel
 from genrec.tokenizer import AbstractTokenizer
+from genrec.utils import config_for_ckpt
 from genrec.utils import config_for_log
+from genrec.utils import get_best_ckpt_path
 from genrec.utils import get_file_name
+from genrec.utils import get_last_ckpt_path
+from genrec.utils import get_rng_states
 from genrec.utils import get_total_steps
+from genrec.utils import load_ckpt
 from genrec.utils import log
+from genrec.utils import set_rng_states
 import numpy as np
 import torch
 from torch import optim
@@ -57,8 +63,11 @@ class Trainer:
       evaluator (Evaluator): The evaluator used for evaluating the model.
       logger (Logger): The logger used for logging training progress.
       project_dir (str): The directory path for saving tensorboard logs.
-      saved_model_ckpt (str): The file path for saving the trained model
-        checkpoint.
+      saved_model_ckpt (str): The file path for saving the best model
+        checkpoint (model weights only). With `test_only` it is `ckpt_path`.
+      last_ckpt (str): The file path for saving the full training state (model,
+        optimizer, scheduler, epoch, RNG states, ...) after every epoch. Pass it
+        as `resume_from` to resume training.
       accelerator: The accelerator used for training.
 
   Methods:
@@ -85,13 +94,42 @@ class Trainer:
     self.evaluator = Evaluator(config, tokenizer)
     self.logger = getLogger()
 
-    self.ckpt_category_dir = os.path.join(
-        self.config['ckpt_dir'], self.config['category']
-    )
-    os.makedirs(self.ckpt_category_dir, exist_ok=True)
-    self.saved_model_ckpt = os.path.join(
-        self.ckpt_category_dir, get_file_name(self.config, suffix='.pth')
-    )
+    self.resume_from = None
+    if self.config['test_only']:
+      # Pure testing: evaluate an existing checkpoint, nothing is written to
+      # the ckpt dir.
+      ckpt_path = self.config['ckpt_path']
+      if not ckpt_path or not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f'test_only requires an existing --ckpt_path, got: {ckpt_path}'
+        )
+      category = self.config['category']
+      if os.path.basename(os.path.dirname(ckpt_path)) != category:
+        self.log(
+            f'Checkpoint {ckpt_path} is not under a "{category}" folder,'
+            ' please double check --category.',
+            level='warning',
+        )
+      self.saved_model_ckpt = ckpt_path
+      self.last_ckpt = None
+      return
+
+    if self.config['resume_from']:
+      # Keep writing to the checkpoints of the run being resumed.
+      self.resume_from = get_last_ckpt_path(self.config['resume_from'])
+      if not os.path.isfile(self.resume_from):
+        raise FileNotFoundError(
+            f'Cannot resume: {self.resume_from} not found (resume_from must be'
+            ' a .last.pth checkpoint or the .pth next to it).'
+        )
+      self.saved_model_ckpt = get_best_ckpt_path(self.resume_from)
+    else:
+      self.saved_model_ckpt = os.path.join(
+          self.config['ckpt_dir'],
+          self.config['category'],
+          get_file_name(self.config, suffix='.pth'),
+      )
+    self.last_ckpt = get_last_ckpt_path(self.saved_model_ckpt)
     os.makedirs(os.path.dirname(self.saved_model_ckpt), exist_ok=True)
 
   def fit(self, train_dataloader, val_dataloader):
@@ -133,10 +171,18 @@ class Trainer:
     n_epochs = np.ceil(
         total_n_steps / (len(train_dataloader) * self.accelerator.num_processes)
     ).astype(int)
+    start_epoch = 0
     best_epoch = 0
     best_val_score = -1
+    if self.resume_from:
+      start_epoch, best_epoch, best_val_score = self._load_training_state(
+          optimizer, scheduler
+      )
+      if self._should_early_stop(start_epoch, best_epoch):
+        self.log(f'Early stopping already triggered at epoch {start_epoch}')
+        n_epochs = start_epoch
 
-    for epoch in range(n_epochs):
+    for epoch in range(start_epoch, n_epochs):
       # Training
       self.model.train()
       total_loss = 0.0
@@ -166,6 +212,7 @@ class Trainer:
       )
 
       # Evaluation
+      early_stop = False
       if (epoch + 1) % self.config['eval_interval'] == 0:
         all_results = self.evaluate(val_dataloader, split='val')
         if self.accelerator.is_main_process:
@@ -180,24 +227,109 @@ class Trainer:
           best_val_score = val_score
           best_epoch = epoch + 1
           if self.accelerator.is_main_process:
-            if self.config['use_ddp']:  # unwrap model for saving
-              unwrapped_model = self.accelerator.unwrap_model(self.model)
-              torch.save(unwrapped_model.state_dict(), self.saved_model_ckpt)
-            else:
-              torch.save(self.model.state_dict(), self.saved_model_ckpt)
+            self._atomic_save(
+                self._unwrapped_state_dict(), self.saved_model_ckpt
+            )
             self.log(
                 f'[Epoch {epoch + 1}] Saved model checkpoint to'
                 f' {self.saved_model_ckpt}'
             )
 
-        if (
-            self.config['patience'] is not None
-            and epoch + 1 - best_epoch >= self.config['patience']
-        ):
-          self.log(f'Early stopping at epoch {epoch + 1}')
-          break
+        early_stop = self._should_early_stop(epoch + 1, best_epoch)
+
+      # The training state is saved after every epoch (also when early
+      # stopping), so that the run can be resumed from the latest epoch.
+      if self.accelerator.is_main_process:
+        self._save_training_state(
+            optimizer, scheduler, epoch + 1, best_epoch, best_val_score
+        )
+      if early_stop:
+        self.log(f'Early stopping at epoch {epoch + 1}')
+        break
 
     self.log(f'Best epoch: {best_epoch}, Best val score: {best_val_score}')
+
+  def _should_early_stop(self, n_epochs_done: int, best_epoch: int) -> bool:
+    """Whether early stopping is triggered after `n_epochs_done` epochs."""
+    return (
+        self.config['patience'] is not None
+        and n_epochs_done > 0
+        and n_epochs_done % self.config['eval_interval'] == 0
+        and n_epochs_done - best_epoch >= self.config['patience']
+    )
+
+  def _unwrapped_state_dict(self):
+    return self.accelerator.unwrap_model(self.model).state_dict()
+
+  @staticmethod
+  def _atomic_save(obj, path):
+    """Saves via a temp file, so an interrupted save cannot corrupt `path`."""
+    tmp_path = path + '.tmp'
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+  def _save_training_state(
+      self, optimizer, scheduler, epoch, best_epoch, best_val_score
+  ):
+    """Saves everything needed to resume training to `self.last_ckpt`."""
+    self._atomic_save(
+        {
+            'model': self._unwrapped_state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'epoch': epoch,  # number of finished epochs
+            'best_epoch': best_epoch,
+            'best_val_score': best_val_score,
+            'rng_states': get_rng_states(),
+            'config': config_for_ckpt(self.config),
+        },
+        self.last_ckpt,
+    )
+
+  def _load_training_state(self, optimizer, scheduler):
+    """Restores the training state saved by `_save_training_state`.
+
+    Args:
+        optimizer: The (prepared) optimizer.
+        scheduler: The (prepared) scheduler.
+
+    Returns:
+        (start_epoch, best_epoch, best_val_score)
+    """
+    state = load_ckpt(self.resume_from)
+    if 'optimizer' not in state:
+      raise ValueError(
+          f'{self.resume_from} is not a training-state checkpoint (.last.pth).'
+      )
+    self.accelerator.unwrap_model(self.model).load_state_dict(state['model'])
+    optimizer.load_state_dict(state['optimizer'])
+    scheduler.load_state_dict(state['scheduler'])
+    set_rng_states(state['rng_states'])
+
+    ignored_keys = {
+        'run_local_time', 'resume_from', 'ckpt_path', 'test_only', 'results_dir'
+    }
+    cur_config = config_for_ckpt(self.config)
+    diff = sorted(
+        key
+        for key in (state['config'].keys() | cur_config.keys()) - ignored_keys
+        if state['config'].get(key) != cur_config.get(key)
+    )
+    if diff:
+      self.log(
+          'Config differs from the checkpointed run in: '
+          + ', '.join(
+              f'{k} ({state["config"].get(k)} -> {cur_config.get(k)})'
+              for k in diff
+          ),
+          level='warning',
+      )
+    self.log(
+        f'Resumed from {self.resume_from} at epoch {state["epoch"]} (best'
+        f' epoch: {state["best_epoch"]}, best val score:'
+        f' {state["best_val_score"]})'
+    )
+    return state['epoch'], state['best_epoch'], state['best_val_score']
 
   def evaluate(self, dataloader, split='test'):
     """Evaluates the model on the given dataloader.

@@ -18,6 +18,10 @@ cache_dir: cache/       # Usually for raw and processed data
 log_dir: logs/
 tensorboard_log_dir: tensorboard/
 ckpt_dir: ckpt/
+results_dir: results/   # Test metrics are saved to results_dir/category/<ckpt name>.json
+test_only: False        # True: skip training and only evaluate ckpt_path on the test set
+ckpt_path: ~            # Required if test_only. A best (.pth) or last (.last.pth) checkpoint
+resume_from: ~          # Resume training from this checkpoint (.last.pth, or the .pth next to it)
 run_id: genrec_default  # Change this to your customized run id
 rand_seed: 2024
 reproducibility: True

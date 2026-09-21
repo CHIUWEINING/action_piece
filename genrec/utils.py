@@ -85,6 +85,9 @@ def get_command_line_args_str():
         '--my_log_dir',
         '--tensorboard_log_dir',
         '--ckpt_dir',
+        '--ckpt_path',
+        '--resume_from',
+        '--results_dir',
     ]:
       if arg.startswith(flag):
         filter_flag = True
@@ -113,6 +116,84 @@ def get_file_name(config: dict[str, Any], suffix: str = '') -> str:
   command_line_args = get_command_line_args_str()
   logfilename = f'{config["run_id"]}-{command_line_args}-{config["run_local_time"]}-{md5}-{suffix}'
   return logfilename
+
+
+_BEST_CKPT_SUFFIX = '.pth'
+_LAST_CKPT_SUFFIX = '.last.pth'
+
+
+def get_best_ckpt_path(ckpt_path: str) -> str:
+  """Maps a `<prefix>.last.pth` path to its `<prefix>.pth` (best model) path."""
+  if ckpt_path.endswith(_LAST_CKPT_SUFFIX):
+    return ckpt_path[: -len(_LAST_CKPT_SUFFIX)] + _BEST_CKPT_SUFFIX
+  return ckpt_path
+
+
+def get_last_ckpt_path(ckpt_path: str) -> str:
+  """Maps a `<prefix>.pth` (best model) path to its `<prefix>.last.pth` path."""
+  if ckpt_path.endswith(_LAST_CKPT_SUFFIX):
+    return ckpt_path
+  if ckpt_path.endswith(_BEST_CKPT_SUFFIX):
+    ckpt_path = ckpt_path[: -len(_BEST_CKPT_SUFFIX)]
+  return ckpt_path + _LAST_CKPT_SUFFIX
+
+
+def get_results_path(config: dict[str, Any], ckpt_path: str) -> str:
+  """Returns `<results_dir>/<category>/<ckpt file name without .pth>.json`."""
+  prefix = os.path.basename(ckpt_path)
+  if prefix.endswith(_BEST_CKPT_SUFFIX):
+    prefix = prefix[: -len(_BEST_CKPT_SUFFIX)]
+  return os.path.join(
+      config['results_dir'], config['category'], prefix + '.json'
+  )
+
+
+def config_for_ckpt(config: dict[str, Any]) -> dict[str, Any]:
+  """Returns a copy of the config that can be stored in a checkpoint."""
+  config = config.copy()
+  config.pop('device', None)
+  config.pop('accelerator', None)
+  return config
+
+
+def load_ckpt(path: str) -> dict[str, Any]:
+  """Loads a checkpoint file onto the CPU.
+
+  `weights_only=False` because a `.last.pth` holds RNG states and the config.
+  Only load checkpoints you trust.
+  """
+  return torch.load(path, map_location='cpu', weights_only=False)
+
+
+def get_model_state_dict(ckpt: dict[str, Any]) -> dict[str, Any]:
+  """Extracts the model weights from a best (`.pth`) or last checkpoint."""
+  if 'model' in ckpt and 'optimizer' in ckpt:
+    return ckpt['model']
+  return ckpt
+
+
+def get_rng_states() -> dict[str, Any]:
+  """Captures the python / numpy / torch / cuda RNG states."""
+  states = {
+      'python': random.getstate(),
+      'numpy': np.random.get_state(),
+      'torch': torch.get_rng_state(),
+  }
+  if torch.cuda.is_available():
+    states['cuda'] = torch.cuda.get_rng_state_all()
+  return states
+
+
+def set_rng_states(states: dict[str, Any]) -> None:
+  """Restores RNG states captured by `get_rng_states`."""
+  random.setstate(states['python'])
+  np.random.set_state(states['numpy'])
+  torch.set_rng_state(states['torch'])
+  if 'cuda' in states and torch.cuda.is_available():
+    try:
+      torch.cuda.set_rng_state_all(states['cuda'])
+    except RuntimeError:  # e.g. a different number of GPUs
+      logging.getLogger().warning('Could not restore the CUDA RNG states.')
 
 
 def init_logger(config: dict[str, Any]):
@@ -458,7 +539,8 @@ def parse_command_line_args(unparsed: list[str]) -> dict[str, Any]:
           f"Invalid command line argument: {text_arg}, please add '=' to"
           ' separate key and value.'
       )
-    key, value = text_arg.split('=')
+    # Split on the first '=' only: checkpoint file names contain '='.
+    key, value = text_arg.split('=', 1)
     key = key[len('--') :]
     try:
       value = _convert_value(value)

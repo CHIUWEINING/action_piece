@@ -74,6 +74,42 @@ for seed in {2024..2028}; do
 done
 ```
 
+## Checkpoints, resuming and testing
+
+Each run writes two files to `ckpt/<category>/`, sharing the same prefix:
+
+* `<prefix>.pth` - the weights of the best validation epoch (model only).
+* `<prefix>.last.pth` - the full training state after the latest epoch (model,
+  optimizer, scheduler, epoch, best epoch / score, RNG states, config).
+
+### Resume training
+
+```bash
+python main.py --category=Musical_Instruments <same hyperparameters as before> \
+    --resume_from=ckpt/Musical_Instruments/<prefix>.last.pth
+```
+
+Passing `<prefix>.pth` also works, the `.last.pth` next to it is used. Training
+continues from the latest epoch and keeps updating the same `<prefix>.pth` and
+`<prefix>.last.pth`. A warning lists any config value that differs from the
+original run. Logs and tensorboard go to a new run (with continuing epochs).
+
+### Test only
+
+```bash
+python main.py --category=Musical_Instruments <same hyperparameters as training> \
+    --test_only=True \
+    --ckpt_path=ckpt/Musical_Instruments/<prefix>.pth
+```
+
+The checkpoint only holds weights, so the model / tokenizer hyperparameters
+(e.g. `d_model`, `d_ff`, `n_hash_buckets`) and `--category` must match the
+training run. Use the same `--rand_seed` for reproducible test metrics (the
+test inputs are randomly shuffled for the inference ensemble).
+
+The metrics are saved to `results/<category>/<prefix>.json` (also after normal
+training runs); the folder can be changed with `--results_dir`.
+
 ## Locating the code
 
 ### Vocabulary construction

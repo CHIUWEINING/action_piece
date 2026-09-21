@@ -15,6 +15,7 @@
 
 """Pipeline for ActionPiece."""
 
+import json
 import logging
 import os
 from typing import Any, Dict, Union
@@ -24,7 +25,6 @@ from genrec import utils
 from genrec.dataset import AbstractDataset
 from genrec.model import AbstractModel
 from genrec.tokenizer import AbstractTokenizer
-import torch
 from torch.utils import data
 
 
@@ -163,27 +163,58 @@ class Pipeline:
       )
     test_dataloader = get_dataloader('test', test_batch_size, False)
 
-    self.trainer.fit(train_dataloader, val_dataloader)
+    test_only = self.config['test_only']
+    if not test_only:
+      self.trainer.fit(train_dataloader, val_dataloader)
 
     self.accelerator.wait_for_everyone()
     self.model = self.accelerator.unwrap_model(self.model)
 
-    self.model.load_state_dict(torch.load(self.trainer.saved_model_ckpt))
+    ckpt = utils.load_ckpt(self.trainer.saved_model_ckpt)
+    self.model.load_state_dict(utils.get_model_state_dict(ckpt))
     self.model, test_dataloader = self.accelerator.prepare(
         self.model, test_dataloader
     )
+    if test_only:
+      # The trainer never prepared the model, so hand it the prepared one.
+      self.trainer.model = self.model
     if self.accelerator.is_main_process:
       self.log(
-          f'Loaded best model checkpoint from {self.trainer.saved_model_ckpt}'
+          f'Loaded model checkpoint from {self.trainer.saved_model_ckpt}'
       )
     test_results = self.trainer.evaluate(test_dataloader)
 
     if self.accelerator.is_main_process:
       for key in test_results:
         self.trainer.accelerator.log({f'Test_Metric/{key}': test_results[key]})
+      self.save_results(test_results)
     self.log(f'Test Results: {test_results}')
 
     self.trainer.end()
+
+  def save_results(self, test_results: Dict[str, float]) -> str:
+    """Saves the test metrics to `results/<category>/<ckpt name>.json`."""
+    ckpt_path = self.trainer.saved_model_ckpt
+    results_path = utils.get_results_path(self.config, ckpt_path)
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    with open(results_path, 'w') as f:
+      json.dump(
+          {
+              'ckpt_path': ckpt_path,
+              'dataset': self.config['dataset'],
+              'category': self.config['category'],
+              'model': self.config['model'],
+              'rand_seed': self.config['rand_seed'],
+              'test_only': self.config['test_only'],
+              'metrics': dict(test_results),
+              'config': utils.config_for_ckpt(self.config),
+          },
+          f,
+          indent=2,
+          default=str,
+      )
+    self.log(f'Saved test results to {results_path}')
+    return results_path
 
   def log(self, message, level='info'):
     return utils.log(
