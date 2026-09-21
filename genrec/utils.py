@@ -124,10 +124,12 @@ def init_logger(config: dict[str, Any]):
   os.makedirs(dataset_name, exist_ok=True)
   model_name = os.path.join(dataset_name, config['model'])
   os.makedirs(model_name, exist_ok=True)
+  category_name = os.path.join(model_name, config['category'])
+  os.makedirs(category_name, exist_ok=True)
 
   logfilename = get_file_name(config, suffix='.log')
   logfilepath = os.path.join(
-      log_root, config['dataset'], config['model'], logfilename
+      log_root, config['dataset'], config['model'], config['category'], logfilename
   )
 
   filefmt = '%(asctime)-15s %(levelname)s  %(message)s'

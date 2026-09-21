@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Dataset for Amazon Reviews 2014."""
+"""Dataset for Amazon Reviews 2023."""
 
 import ast
 import collections
@@ -27,6 +27,8 @@ from genrec.utils import clean_text
 from genrec.utils import download_file
 import numpy as np
 import tqdm
+from collections import Counter
+
 
 
 def check_available_category(category: str):
@@ -63,6 +65,8 @@ def check_available_category(category: str):
       'Digital_Music',
       'Musical_Instruments',
       'Amazon_Instant_Video',
+      "Industrial_and_Scientific",
+      "Musical_Instruments",
   ]
   assert category in available_categories, (
       f'Category "{category}" not available. '
@@ -94,6 +98,45 @@ def parse_gz(path: str):
           # If both fail, skip this line and continue
           continue
 
+def five_core_filter(item_seqs, k=5):
+    while True:
+        # Count item interactions
+        item_counts = Counter(
+            item
+            for seq in item_seqs.values()
+            for item, _ in seq
+        )
+
+        # Remove items with fewer than k interactions
+        new_item_seqs = {
+            user: [
+                (item, time)
+                for item, time in seq
+                if item_counts[item] >= k
+            ]
+            for user, seq in item_seqs.items()
+        }
+
+        # Remove users with fewer than k interactions
+        new_item_seqs = {
+            user: seq
+            for user, seq in new_item_seqs.items()
+            if len(seq) >= k
+        }
+
+        # Stop when nothing changes
+        if (
+            len(new_item_seqs) == len(item_seqs)
+            and all(
+                len(new_item_seqs[u]) == len(item_seqs[u])
+                for u in new_item_seqs
+            )
+        ):
+            break
+
+        item_seqs = new_item_seqs
+
+    return item_seqs
 
 def get_item_seqs(
     reviews: Sequence[tuple[str, str, int]]
@@ -113,6 +156,7 @@ def get_item_seqs(
   for user, item, time in reviews:
     item_seqs[user].append((item, time))
 
+  item_seqs = five_core_filter(item_seqs, k=5)
   # Sort items by time
   for user, item_time in item_seqs.items():
     item_time.sort(key=lambda x: x[1])
@@ -121,8 +165,8 @@ def get_item_seqs(
   return item_seqs
 
 
-class AmazonReviews2014(AbstractDataset):
-  """A class representing the Amazon Reviews 2014 dataset.
+class AmazonReviews2023(AbstractDataset):
+  """A class representing the Amazon Reviews 2023 dataset.
 
   Attributes:
       config (dict): A dictionary containing the configuration parameters for
@@ -136,7 +180,7 @@ class AmazonReviews2014(AbstractDataset):
   """
 
   def __init__(self, config: dict[str, Any]):
-    """Initializes the Amazon Reviews 2014 dataset.
+    """Initializes the Amazon Reviews 2023 dataset.
 
     Args:
       config (dict): A dictionary containing the configuration parameters for
@@ -146,10 +190,10 @@ class AmazonReviews2014(AbstractDataset):
 
     self.category = config['category']
     check_available_category(self.category)
-    self.log(f'[DATASET] Amazon Reviews 2014 for category: {self.category}')
+    self.log(f'[DATASET] Amazon Reviews 2023 for category: {self.category}')
 
     self.cache_dir = os.path.join(
-        config['cache_dir'], 'AmazonReviews2014', self.category
+        config['cache_dir'], 'AmazonReviews2023', self.category
     )
     self._download_and_process_raw()
 
@@ -164,9 +208,10 @@ class AmazonReviews2014(AbstractDataset):
     Returns:
         str: The local file path where the downloaded file is saved.
     """
-    url = (
-        f'https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/{file_type}_{self.category}{"_5" if file_type == "reviews" else ""}.json.gz'
-    )
+    # url = (
+        # f'https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/{file_type}_{self.category}{"_5" if file_type == "reviews" else ""}.json.gz'
+    # )
+    url = (f'https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/raw/{file_type}_categories/{"meta_" if file_type == "meta" else ""}{self.category}.jsonl.gz')
     base_name = os.path.basename(url)
     local_filepath = os.path.join(path, base_name)
     if not os.path.exists(local_filepath):
@@ -182,15 +227,18 @@ class AmazonReviews2014(AbstractDataset):
     Returns:
         list: A list of tuples representing the reviews. Each tuple contains the
         user ID, item ID, and the interaction timestamp.
+        dict: A dictionary mapping item IDs to their parent item IDs.
     """
     self.log('[DATASET] Loading reviews...')
     reviews = []
+    asin_parentasin = {}
     for inter in parse_gz(path):
-      user = inter['reviewerID']
+      user = inter['user_id']
       item = inter['asin']
-      time = inter['unixReviewTime']
+      asin_parentasin[item] =  inter['parent_asin']
+      time = inter['timestamp']
       reviews.append((user, item, int(time)))
-    return reviews
+    return reviews, asin_parentasin
 
   def _remap_ids(
       self, item_seqs: dict[str, list[str]]
@@ -246,18 +294,21 @@ class AmazonReviews2014(AbstractDataset):
     # Check if the processed data already exists
     seq_file = os.path.join(output_path, 'all_item_seqs.json')
     id_mapping_file = os.path.join(output_path, 'id_mapping.json')
-    if os.path.exists(seq_file) and os.path.exists(id_mapping_file):
+    asin_parentasin_file = os.path.join(output_path, 'asin_parentasin.json')
+    if os.path.exists(seq_file) and os.path.exists(id_mapping_file) and os.path.exists(asin_parentasin_file):
       self.log('[DATASET] Reviews have been processed...')
       with open(seq_file, 'r') as f:
         all_item_seqs = json.load(f)
       with open(id_mapping_file, 'r') as f:
         id_mapping = json.load(f)
-      return all_item_seqs, id_mapping
+      with open(asin_parentasin_file, 'r') as f:
+        asin_parentasin = json.load(f)
+      return all_item_seqs, id_mapping, asin_parentasin
 
     self.log('[DATASET] Processing reviews...')
 
     # Load reviews
-    reviews = self._load_reviews(input_path)
+    reviews, asin_parentasin = self._load_reviews(input_path)
     item_seqs = get_item_seqs(reviews)
     all_item_seqs, id_mapping = self._remap_ids(item_seqs)
 
@@ -267,7 +318,9 @@ class AmazonReviews2014(AbstractDataset):
       json.dump(all_item_seqs, f)
     with open(id_mapping_file, 'w') as f:
       json.dump(id_mapping, f)
-    return all_item_seqs, id_mapping
+    with open(asin_parentasin_file, 'w') as f:
+      json.dump(asin_parentasin, f)
+    return all_item_seqs, id_mapping, asin_parentasin
 
   def _load_metadata(
       self, path: str, item2id: dict[str, int]
@@ -286,9 +339,8 @@ class AmazonReviews2014(AbstractDataset):
     data = {}
     item_asins = set(item2id.keys())
     for info in tqdm.tqdm(parse_gz(path)):
-      if info['asin'] not in item_asins:
-        continue
-      data[info['asin']] = info
+      asin = info['parent_asin']
+      data[asin] = info
     return data
 
   def _sent_process(self, raw: str) -> str:
@@ -314,6 +366,8 @@ class AmazonReviews2014(AbstractDataset):
     elif isinstance(raw, list):
       for v1 in raw:
         sentence += clean_text(v1)
+    elif raw == None:
+      return ''
     else:
       sentence = clean_text(raw)
     return sentence + ' '
@@ -337,13 +391,16 @@ class AmazonReviews2014(AbstractDataset):
           'title',
           'price',
           'brand',
-          'feature',
+          'features',
           'categories',
           'description',
       ]
       for feature in features_needed:
         if feature in keys:
-          meta_sentence += self._sent_process(meta[feature])
+          if feature == 'brand':
+            if 'brand' in meta['details']: meta_sentence += self._sent_process(meta['details']['brand'])
+          else:
+            meta_sentence += self._sent_process(meta[feature])
       item2meta[item] = meta_sentence
     return item2meta
 
@@ -404,7 +461,7 @@ class AmazonReviews2014(AbstractDataset):
     os.makedirs(raw_data_path, exist_ok=True)
     with self.accelerator.main_process_first():  # only download once when ddp
       reviews_localpath = self._download_raw(
-          path=raw_data_path, file_type='reviews'
+          path=raw_data_path, file_type='review'
       )
       meta_localpath = self._download_raw(path=raw_data_path, file_type='meta')
 
@@ -414,7 +471,7 @@ class AmazonReviews2014(AbstractDataset):
     processed_data_path = os.path.join(self.cache_dir, 'processed')
     os.makedirs(processed_data_path, exist_ok=True)
 
-    self.all_item_seqs, self.id_mapping = self._process_reviews(
+    self.all_item_seqs, self.id_mapping, self.asin_parentasin = self._process_reviews(
         input_path=reviews_localpath, output_path=processed_data_path
     )
 

@@ -27,7 +27,7 @@ def parse_args():
       '--model', type=str, default='ActionPiece', help='Model name'
   )
   parser.add_argument(
-      '--dataset', type=str, default='AmazonReviews2014', help='Dataset name'
+      '--dataset', type=str, default='AmazonReviews2023', help='Dataset name'
   )
   return parser.parse_known_args()
 

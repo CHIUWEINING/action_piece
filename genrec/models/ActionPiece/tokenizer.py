@@ -90,7 +90,7 @@ class ActionPieceTokenizer(AbstractTokenizer):
     else:
       item2meta = dataset.item2meta
     for i in range(1, dataset.n_items):
-      meta_sentences.append(item2meta[dataset.id_mapping['id2item'][i]])
+      meta_sentences.append(item2meta[dataset.asin_parentasin[dataset.id_mapping['id2item'][i]]])
     sent_embs = sent_emb_model.encode(
         meta_sentences,
         convert_to_numpy=True,

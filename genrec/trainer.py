@@ -85,8 +85,12 @@ class Trainer:
     self.evaluator = Evaluator(config, tokenizer)
     self.logger = getLogger()
 
+    self.ckpt_category_dir = os.path.join(
+        self.config['ckpt_dir'], self.config['category']
+    )
+    os.makedirs(self.ckpt_category_dir, exist_ok=True)
     self.saved_model_ckpt = os.path.join(
-        self.config['ckpt_dir'], get_file_name(self.config, suffix='.pth')
+        self.ckpt_category_dir, get_file_name(self.config, suffix='.pth')
     )
     os.makedirs(os.path.dirname(self.saved_model_ckpt), exist_ok=True)
 

@@ -26,7 +26,7 @@ Note that:
 1. The datasets will be automatically downloaded once the `category` argument is specified.
 2. All hyperparameters can be specified via command line arguments. Please refer to:
     * `genrec/default.yaml`
-    * `genrec/datasets/AmazonReviews2014/config.yaml`
+    * `genrec/datasets/AmazonReviews2023/config.yaml`
     * `genrec/models/ActionPiece/config.yaml`
 
 ## Reproduction
