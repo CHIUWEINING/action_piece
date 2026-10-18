@@ -89,8 +89,11 @@ class ActionPieceTokenizer(AbstractTokenizer):
       item2meta = dataset.item2meta['sentence']
     else:
       item2meta = dataset.item2meta
+    # Amazon 2023 keys metadata by parent_asin; 2014 / 2018 key it by asin.
+    asin2meta_key = getattr(dataset, 'asin_parentasin', None) or {}
     for i in range(1, dataset.n_items):
-      meta_sentences.append(item2meta[dataset.asin_parentasin[dataset.id_mapping['id2item'][i]]])
+      item = dataset.id_mapping['id2item'][i]
+      meta_sentences.append(item2meta.get(asin2meta_key.get(item, item), ''))
     sent_embs = sent_emb_model.encode(
         meta_sentences,
         convert_to_numpy=True,
