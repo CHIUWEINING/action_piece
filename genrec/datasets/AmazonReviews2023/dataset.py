@@ -41,32 +41,40 @@ def check_available_category(category: str):
       AssertionError: If the specified category is not available.
   """
   available_categories = [
-      'Books',
-      'Electronics',
-      'Movies_and_TV',
-      'CDs_and_Vinyl',
-      'Clothing_Shoes_and_Jewelry',
-      'Home_and_Kitchen',
-      'Kindle_Store',
-      'Sports_and_Outdoors',
-      'Cell_Phones_and_Accessories',
-      'Health_and_Personal_Care',
-      'Toys_and_Games',
-      'Video_Games',
-      'Tools_and_Home_Improvement',
-      'Beauty',
-      'Apps_for_Android',
-      'Office_Products',
-      'Pet_Supplies',
+      'All_Beauty',
+      'Amazon_Fashion',
+      'Appliances',
+      'Arts_Crafts_and_Sewing',
       'Automotive',
-      'Grocery_and_Gourmet_Food',
-      'Patio_Lawn_and_Garden',
-      'Baby',
+      'Baby_Products',
+      'Beauty_and_Personal_Care',
+      'Books',
+      'CDs_and_Vinyl',
+      'Cell_Phones_and_Accessories',
+      'Clothing_Shoes_and_Jewelry',
       'Digital_Music',
+      'Electronics',
+      'Gift_Cards',
+      'Grocery_and_Gourmet_Food',
+      'Handmade_Products',
+      'Health_and_Household',
+      'Health_and_Personal_Care',
+      'Home_and_Kitchen',
+      'Industrial_and_Scientific',
+      'Kindle_Store',
+      'Magazine_Subscriptions',
+      'Movies_and_TV',
       'Musical_Instruments',
-      'Amazon_Instant_Video',
-      "Industrial_and_Scientific",
-      "Musical_Instruments",
+      'Office_Products',
+      'Patio_Lawn_and_Garden',
+      'Pet_Supplies',
+      'Software',
+      'Sports_and_Outdoors',
+      'Subscription_Boxes',
+      'Tools_and_Home_Improvement',
+      'Toys_and_Games',
+      'Unknown',
+      'Video_Games',
   ]
   assert category in available_categories, (
       f'Category "{category}" not available. '
@@ -99,6 +107,15 @@ def parse_gz(path: str):
           continue
 
 def five_core_filter(item_seqs, k=5):
+    """Iteratively removes items and users with fewer than k interactions.
+
+    Args:
+        item_seqs (dict): user -> list of (item, timestamp).
+        k (int): Minimum number of interactions per user and per item.
+
+    Returns:
+        dict: The filtered user -> list of (item, timestamp).
+    """
     while True:
         # Count item interactions
         item_counts = Counter(
@@ -141,7 +158,7 @@ def five_core_filter(item_seqs, k=5):
 def get_item_seqs(
     reviews: Sequence[tuple[str, str, int]]
 ) -> dict[str, list[str]]:
-  """Group the reviews by user and sort the items by time.
+  """Group the reviews by user, apply 5-core filtering, and sort the items by time.
 
   Args:
       reviews (Sequence[tuple[str, str, int]]): A list of tuples representing
@@ -176,7 +193,10 @@ class AmazonReviews2023(AbstractDataset):
       cache_dir (str): The directory path for caching the dataset.
       all_item_seqs (dict): A dictionary containing all the user-item sequences.
       id_mapping (dict): A dictionary containing data maps.
-      item2meta (dict): A dictionary containing the item metadata.
+      item2meta (dict): A dictionary containing the item metadata, keyed by
+        parent_asin.
+      asin_parentasin (dict): A dictionary mapping asin (item ID) to
+        parent_asin.
   """
 
   def __init__(self, config: dict[str, Any]):
@@ -218,16 +238,18 @@ class AmazonReviews2023(AbstractDataset):
       download_file(url, local_filepath)
     return local_filepath
 
-  def _load_reviews(self, path: str) -> list[tuple[str, str, int]]:
+  def _load_reviews(
+      self, path: str
+  ) -> tuple[list[tuple[str, str, int]], dict[str, str]]:
     """Load reviews from a given path.
 
     Args:
         path (str): The path to the file containing the reviews.
 
     Returns:
-        list: A list of tuples representing the reviews. Each tuple contains the
-        user ID, item ID, and the interaction timestamp.
-        dict: A dictionary mapping item IDs to their parent item IDs.
+        reviews (list): A list of tuples representing the reviews. Each tuple
+        contains the user ID, item ID (asin), and the interaction timestamp.
+        asin_parentasin (dict): A dictionary mapping asin to parent_asin.
     """
     self.log('[DATASET] Loading reviews...')
     reviews = []
@@ -280,7 +302,7 @@ class AmazonReviews2023(AbstractDataset):
 
   def _process_reviews(
       self, input_path: str, output_path: str
-  ) -> tuple[dict[str, list[str]], dict[str, Any]]:
+  ) -> tuple[dict[str, list[str]], dict[str, Any], dict[str, str]]:
     """Process the reviews from the input path and save the data to the output path.
 
     Args:
@@ -290,6 +312,7 @@ class AmazonReviews2023(AbstractDataset):
     Returns:
         all_item_seqs (dict): A dictionary containing the user-item sequences.
         id_mapping (dict): A dictionary containing data maps.
+        asin_parentasin (dict): A dictionary mapping asin to parent_asin.
     """
     # Check if the processed data already exists
     seq_file = os.path.join(output_path, 'all_item_seqs.json')
@@ -325,15 +348,17 @@ class AmazonReviews2023(AbstractDataset):
   def _load_metadata(
       self, path: str, item2id: dict[str, int]
   ) -> dict[str, Any]:
-    """Load metadata from a given path and filter it based on the provided data maps.
+    """Load metadata from a given path, keyed by parent_asin.
+
+    All items in the metadata file are kept (no filtering by `item2id`).
 
     Args:
         path (str): The path to the metadata file.
         item2id (dict): A dictionary mapping item raw tokens (ASIN) to their
-          corresponding IDs.
+          corresponding IDs. Currently unused.
 
     Returns:
-        dict: A dictionary containing the filtered metadata.
+        dict: A dictionary mapping parent_asin to its raw metadata.
     """
     self.log('[DATASET] Loading metadata...')
     data = {}
@@ -343,34 +368,62 @@ class AmazonReviews2023(AbstractDataset):
       data[asin] = info
     return data
 
-  def _sent_process(self, raw: str) -> str:
+  def _sent_process(self, raw: Any) -> str:
     """Process the raw input according to the raw data type and return a processed sentence.
 
+    The same implementation is used in AmazonReviews2014 / 2018 / 2023. It
+    follows the original AmazonReviews2014 code, except that:
+      - category names are no longer truncated by `clean_text(v)[:-1]`;
+      - list[str] values are joined with ', ' (empty items dropped) and end
+        with a period, instead of being concatenated without a separator;
+      - None returns '' and int is handled like float.
+
     Args:
-        raw (str): The raw input to be processed.
+        raw (Any): The raw input to be processed (str, int, float, list[str],
+          list[list[str]] or None).
 
     Returns:
-        str: The processed sentence.
+        str: The processed sentence, followed by a space ('' for None).
     """
+    if raw is None:
+      return ''
     sentence = ''
-    if isinstance(raw, float):
+    if isinstance(raw, (int, float)):
       sentence += str(raw)
       sentence += '.'
     elif raw and isinstance(raw[0], list):
-      for v1 in raw:
-        for v in v1:
-          sentence += clean_text(v)[:-1]
-          sentence += ', '
-      sentence = sentence[:-2]
-      sentence += '.'
+      # list[list[str]], e.g. 2014 `categories`:
+      # [['Beauty', 'Skin Care', 'Face'], ['Beauty', 'Makeup']]
+      parts = [clean_text(v).strip() for v1 in raw for v in v1]
+      sentence = ', '.join(p for p in parts if p).rstrip('.') + '.'
     elif isinstance(raw, list):
-      for v1 in raw:
-        sentence += clean_text(v1)
-    elif raw == None:
-      return ''
+      # list[str], e.g. 2018 `feature` / `category`, 2023 `features` / `categories`
+      parts = [clean_text(v).strip() for v in raw if isinstance(v, str)]
+      parts = [p for p in parts if p]
+      if parts:
+        sentence = ', '.join(parts).rstrip('.') + '.'
     else:
       sentence = clean_text(raw)
     return sentence + ' '
+
+  @staticmethod
+  def _get_brand(meta: dict[str, Any]) -> Optional[str]:
+    """Returns the brand of a 2023 item, or None if unavailable.
+
+    2023 has no top-level `brand`. Uses details["Brand"] (or details["brand"]),
+    falling back to the top-level `store` field. `details` may be a dict or a
+    JSON string.
+    """
+    details = meta.get('details') or {}
+    if isinstance(details, str):
+      try:
+        details = json.loads(details)
+      except json.JSONDecodeError:
+        details = {}
+    for key in ('Brand', 'brand'):
+      if isinstance(details, dict) and details.get(key):
+        return details[key]
+    return meta.get('store') or None
 
   def _extract_meta_sentences(self, metadata: dict[str, Any]) -> dict[str, str]:
     """Extracts meta sentences from the given metadata dictionary.
@@ -396,11 +449,10 @@ class AmazonReviews2023(AbstractDataset):
           'description',
       ]
       for feature in features_needed:
-        if feature in keys:
-          if feature == 'brand':
-            if 'brand' in meta['details']: meta_sentence += self._sent_process(meta['details']['brand'])
-          else:
-            meta_sentence += self._sent_process(meta[feature])
+        if feature == 'brand':
+          meta_sentence += self._sent_process(self._get_brand(meta))
+        elif feature in keys:
+          meta_sentence += self._sent_process(meta[feature])
       item2meta[item] = meta_sentence
     return item2meta
 
