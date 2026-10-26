@@ -88,6 +88,7 @@ def get_command_line_args_str():
         '--ckpt_path',
         '--resume_from',
         '--results_dir',
+        '--data_dir',
     ]:
       if arg.startswith(flag):
         filter_flag = True

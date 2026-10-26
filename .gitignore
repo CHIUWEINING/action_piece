@@ -27,3 +27,6 @@ cache/
 logs/
 tensorboard/
 ckpt/
+
+# Steam / Yelp data (Yelp license: do not redistribute)
+steam-yelp-datasets/
